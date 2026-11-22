@@ -3,6 +3,7 @@ package com.toona.localvideolab
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
@@ -248,6 +249,8 @@ private fun thumbnailUrl(url: String): String = url.replace(
     Regex(":3000:3000:q\\d+\\.(webp|jpeg|jpg)", RegexOption.IGNORE_CASE),
 ) { match -> ":360:360:q60.${match.groupValues[1]}" }
 
+private const val THUMBNAIL_MAX_DIMENSION = 640
+
 private suspend fun loadThumbnail(
     url: String,
     headers: Map<String, String>,
@@ -262,7 +265,25 @@ private suspend fun loadThumbnail(
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*,*/*;q=0.8")
             connection.connect()
             if (connection.responseCode !in 200..299) return@runCatching null
-            connection.inputStream.use { BitmapFactory.decodeStream(it)?.asImageBitmap() }
+            connection.inputStream.use { input ->
+                val bytes = input.readBytes()
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+                var sampleSize = 1
+                val halfWidth = bounds.outWidth / 2
+                val halfHeight = bounds.outHeight / 2
+                while (halfWidth / sampleSize >= THUMBNAIL_MAX_DIMENSION ||
+                    halfHeight / sampleSize >= THUMBNAIL_MAX_DIMENSION
+                ) {
+                    sampleSize *= 2
+                }
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
+            }
         } finally {
             connection.disconnect()
         }
