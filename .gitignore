@@ -1,0 +1,21 @@
+.gradle/
+.idea/
+.kotlin/
+local.properties
+**/build/
+*.iml
+*.jks
+*.keystore
+
+# 构建产物与测试媒体（可由源码重建）
+dist/
+test-artifacts/
+
+# Python 字节码缓存
+__pycache__/
+*.pyc
+
+# 真机调试截图与 IDE 窗口布局导出
+device-*.png
+localvideolab-window.xml
+
