@@ -19,3 +19,6 @@ __pycache__/
 device-*.png
 localvideolab-window.xml
 
+# 本机 AI 协作说明（可能含设备与环境信息）
+AGENTS.md
+

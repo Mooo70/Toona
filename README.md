@@ -1,46 +1,61 @@
 # Toona
 
-Android 端纯本地视频与图文下载技术验证项目。第一台目标设备：小米 15，Android 16，arm64-v8a。
+<p align="center">
+  <img src="artwork/ic_launcher_master.png" width="128" alt="Toona App 图标">
+</p>
 
-## 当前里程碑
+Toona 是一款在 Android 手机上本地运行的视频与图集下载工具。粘贴分享文案或作品网址后，应用会识别平台、解析媒体、预览图集，并把选中的内容保存到系统相册。
 
-- [x] 独立于全局 Skill 的 Android 项目
-- [x] 系统分享文本入口
-- [x] 五平台链接识别
-- [x] Chaquopy Python 3.12 接入
-- [x] yt-dlp 打包配置
-- [x] 小米 15 / Android 16 真机构建、安装与 Python 启动验证
-- [x] 抖音匿名解析、清晰度档位选择与前台下载服务
-- [x] 抖音图文识别、缩略图预览、全选/逐张选择与批量保存
-- [x] 抖音分享短链、`/note/<id>`、`/video/<id>` 及电脑网页 `modal_id/aweme_id` 网址识别
-- [x] 抖音图文优先使用公开详情接口的无平台水印图片源，并逐张验收格式与尺寸
-- [x] 下载进度、取消、MediaStore 相册保存与音视频轨道验收
-- [x] B站画质（最高/1080p/720p/480p）与编码（H.264/H.265/AV1/自动）选择
-- [x] B站 AAC 双轨下载、备用 CDN 与 Android 原生无损合并
-- [x] 小红书分享文案、`xhslink.com/.cn` 短链及作品网址识别
-- [x] 小红书公开图文原图预览、选择与批量保存
-- [x] 小红书公开视频优先原始文件源，缺失时回退公开页最佳流
-- [ ] YouTube 本地登录态与 JS 运行时
-- [ ] Instagram 本地登录态与代理
+## 功能
 
-## 隔离原则
+- 抖音：视频、图文作品，支持分享文案、短链和网页链接
+- 小红书：视频、普通图集和实况图集，支持短链与完整作品网址
+- B站：视频下载，可选清晰度和编码，音视频在手机本地合并
+- YouTube：公开视频下载，可选清晰度和编码；部分内容可能触发平台机器人校验
+- Instagram：视频和图集；登录态保存在手机本地，解析时需要可访问 Instagram 的网络环境
+- 通用体验：系统分享入口、一键清空、图集预览与选择、下载进度、取消任务、结果验收
 
-`D:\Skills\video-download-pipeline` 是只读上游参考。此项目不从原 Skill 目录运行代码，也不复制 Cookie、浏览器配置、下载历史、数据库或日志。
+## 技术栈
 
-## 构建
+- Kotlin、Jetpack Compose、Material 3
+- Chaquopy 与 Python 3.12
+- yt-dlp、httpx、gmssl
+- Android MediaStore、MediaMuxer、前台下载服务
+
+## 本地构建
+
+环境要求：Android Studio、JDK 17、Android SDK 36、Python 3.12。
 
 ```powershell
 ./gradlew.bat :app:assembleDebug
 ```
 
-APK 预期位置：`app/build/outputs/apk/debug/app-debug.apk`。当前测试包为
-`dist/Toona-0.6.0-spike-debug.apk`（仅包含 `arm64-v8a`，面向小米 15 侧载测试）。
+调试 APK 输出到：
 
-## 抖音图文边界
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
 
-Toona 只读取当前公开页面本来就能访问的媒体地址，不绕过账号、私密、好友可见、已删除等访问控制。所谓“无水印”是指选择 `aweme_detail.images[].url_list` 的图片源，避开带有 `tplv-dy-water` 转换的下载地址；作者已经写进原图的文字、贴纸或标识会原样保留。
+当前仅打包 `arm64-v8a`，最低支持 Android 10（API 29）。
 
-## 小红书边界
+## 隐私与安全
 
-小红书仅解析分享链接对应的公开作品页，不访问搜索、评论、账号主页或登录后接口，也不保存账号 Cookie。完整作品网址通常需要保留分享时携带的 `xsec_token`；失效链接会提示重新复制。图文使用作品页的原图文件标识；视频优先 `originVideoKey`，若作者作品没有提供原始视频源，则回退到公开页最佳视频流，并在解析日志中明确提示。
+- 媒体解析与下载在手机本地完成，不设自建后端。
+- 仓库不包含用户 Cookie、浏览器配置、下载历史、数据库或日志。
+- Instagram `sessionid` 由用户在 App 内输入，仅保存在本机应用数据中；不会写入仓库。
+- 应用不会绕过账号私密、好友可见、已删除等访问控制。
+
+## 使用边界
+
+请只下载你有权访问和保存的内容，并遵守平台服务条款、著作权规则及所在地法律。项目仅用于个人学习和技术研究，不保证第三方平台接口长期可用。
+
+## 已知限制
+
+- YouTube 的部分请求会被平台机器人校验拦截。
+- Instagram 通常需要有效登录态和可访问其服务的网络环境。
+- 第三方平台页面和接口变化可能导致解析暂时失效。
+
+## 开源许可
+
+本项目采用 [MIT License](LICENSE)。第三方组件与来源说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

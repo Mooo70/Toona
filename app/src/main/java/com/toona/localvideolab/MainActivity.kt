@@ -1,6 +1,7 @@
 package com.toona.localvideolab
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -39,6 +40,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -115,6 +117,7 @@ private data class ImageItem(
     val urls: List<String>,
     val width: Int,
     val height: Int,
+    val livePhoto: Boolean,
 )
 
 private data class ImageGallery(
@@ -224,6 +227,7 @@ private fun parseImageGallery(metadataJson: String): ImageGallery? {
                     urls = urls,
                     width = image.optInt("width", 0),
                     height = image.optInt("height", 0),
+                    livePhoto = image.optBoolean("live_photo"),
                 ),
             )
         }
@@ -233,10 +237,10 @@ private fun parseImageGallery(metadataJson: String): ImageGallery? {
     return ImageGallery(
         metadataJson = metadataJson,
         platform = platform,
-        workId = if (platform == "xiaohongshu") {
-            metadata.optString("note_id")
-        } else {
-            metadata.optString("aweme_id")
+        workId = when (platform) {
+            "xiaohongshu" -> metadata.optString("note_id")
+            "instagram" -> metadata.optString("shortcode")
+            else -> metadata.optString("aweme_id")
         },
         description = metadata.optString("desc"),
         nickname = metadata.optString("nickname"),
@@ -343,12 +347,22 @@ private fun ImageTile(
                 Column {
                     Text("第 ${image.index + 1} 张", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        if (image.width > 0 && image.height > 0) {
-                            "${image.width}×${image.height}"
-                        } else {
-                            "原图"
+                        buildString {
+                            if (image.livePhoto) append("实况 · ")
+                            append(
+                                if (image.width > 0 && image.height > 0) {
+                                    "${image.width}×${image.height}"
+                                } else {
+                                    "原图"
+                                },
+                            )
                         },
                         style = MaterialTheme.typography.labelSmall,
+                        color = if (image.livePhoto) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     )
                 }
             }
@@ -372,6 +386,7 @@ private fun LocalVideoLabScreen(sharedText: String) {
                 "技术验证版 0.6.0",
                 "抖音：本地解析视频或图文；图文可预览、挑选并批量保存无水印原图源。",
                 "小红书：支持分享文案、短链和带分享令牌的网址，可解析视频或图文。",
+                "Instagram：粘贴 sessionid 登录态后解析图集或视频（需 VPN/代理）。",
                 "B站：yt-dlp 选双轨，Android 原生无损合并。",
                 "下载后统一验收视频轨与音频轨。",
             ),
@@ -379,6 +394,12 @@ private fun LocalVideoLabScreen(sharedText: String) {
     }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("toona_prefs", Context.MODE_PRIVATE) }
+    var sessionid by rememberSaveable {
+        mutableStateOf(prefs.getString("instagram_sessionid", "").orEmpty())
+    }
+    var sessionidDraft by rememberSaveable { mutableStateOf(sessionid) }
+    var showInstagramLoginEditor by rememberSaveable { mutableStateOf(sessionid.isBlank()) }
     val detected = detectPlatform(input)
     val download by DownloadBus.state.collectAsState()
 
@@ -395,6 +416,11 @@ private fun LocalVideoLabScreen(sharedText: String) {
         socialKind = null
         imageGallery = null
         selectedImages = emptySet()
+    }
+
+    fun saveSessionid(value: String) {
+        sessionid = value.trim()
+        prefs.edit().putString("instagram_sessionid", sessionid).apply()
     }
 
     fun callPython(function: String, argument: String? = null) {
@@ -424,16 +450,27 @@ private fun LocalVideoLabScreen(sharedText: String) {
         probeBusy = true
         clearSocialResult()
         val isXiaohongshu = platform == PlatformKind.XIAOHONGSHU
-        val platformName = if (isXiaohongshu) "小红书" else "抖音"
-        val moduleName = if (isXiaohongshu) "xiaohongshu_resolver" else "douyin_resolver"
+        val isInstagram = platform == PlatformKind.INSTAGRAM
+        val platformName = when {
+            isInstagram -> "Instagram"
+            isXiaohongshu -> "小红书"
+            else -> "抖音"
+        }
+        val moduleName = when {
+            isInstagram -> "instagram_resolver"
+            isXiaohongshu -> "xiaohongshu_resolver"
+            else -> "douyin_resolver"
+        }
         logs = logs + "▶ 正在解析$platformName 内容"
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    Python.getInstance()
-                        .getModule(moduleName)
-                        .callAttr("resolve", input)
-                        .toString()
+                    val module = Python.getInstance().getModule(moduleName)
+                    if (isInstagram) {
+                        module.callAttr("resolve", input, sessionid).toString()
+                    } else {
+                        module.callAttr("resolve", input).toString()
+                    }
                 }.getOrElse { error ->
                     JSONObject()
                         .put("ok", false)
@@ -451,7 +488,10 @@ private fun LocalVideoLabScreen(sharedText: String) {
                 imageGallery = gallery
                 selectedImages = gallery?.images?.map { it.index }?.toSet().orEmpty()
                 logs = logs + if (gallery != null) {
-                    "✓ 已识别$platformName 图文：${gallery.images.size} 张，原图源，默认全选"
+                    val liveCount = gallery.images.count { it.livePhoto }
+                    val sourceLabel = if (isInstagram) "最高分辨率图片源" else "图片原图源"
+                    "✓ 已识别$platformName 图文：${gallery.images.size} 张，$sourceLabel" +
+                        if (liveCount > 0) "，其中 $liveCount 张实况，默认全选" else "，默认全选"
                 } else {
                     val sourceTip = if (isXiaohongshu && !metadata.optBoolean("origin_source")) {
                         "；该作品未提供原始视频源，将使用公开页最佳流"
@@ -478,11 +518,22 @@ private fun LocalVideoLabScreen(sharedText: String) {
                 action = DouyinDownloadService.ACTION_START_XIAOHONGSHU
                 putExtra(DouyinDownloadService.EXTRA_SHARE_TEXT, input)
             }
+            PlatformKind.INSTAGRAM -> Intent(context, InstagramDownloadService::class.java).apply {
+                action = InstagramDownloadService.ACTION_START
+                putExtra(InstagramDownloadService.EXTRA_SHARE_TEXT, input)
+                putExtra(InstagramDownloadService.EXTRA_SESSIONID, sessionid)
+            }
             PlatformKind.BILIBILI -> Intent(context, BilibiliDownloadService::class.java).apply {
                 action = BilibiliDownloadService.ACTION_START
                 putExtra(BilibiliDownloadService.EXTRA_SHARE_TEXT, input)
                 putExtra(BilibiliDownloadService.EXTRA_QUALITY, quality)
                 putExtra(BilibiliDownloadService.EXTRA_CODEC, codec)
+            }
+            PlatformKind.YOUTUBE -> Intent(context, YoutubeDownloadService::class.java).apply {
+                action = YoutubeDownloadService.ACTION_START
+                putExtra(YoutubeDownloadService.EXTRA_SHARE_TEXT, input)
+                putExtra(YoutubeDownloadService.EXTRA_QUALITY, quality)
+                putExtra(YoutubeDownloadService.EXTRA_CODEC, codec)
             }
             else -> return
         }
@@ -492,10 +543,10 @@ private fun LocalVideoLabScreen(sharedText: String) {
     fun startImageDownload(gallery: ImageGallery) {
         if (selectedImages.isEmpty() || download.active) return
         val intent = Intent(context, DouyinImageDownloadService::class.java).apply {
-            action = if (gallery.platform == "xiaohongshu") {
-                DouyinImageDownloadService.ACTION_START_XIAOHONGSHU
-            } else {
-                DouyinImageDownloadService.ACTION_START
+            action = when (gallery.platform) {
+                "xiaohongshu" -> DouyinImageDownloadService.ACTION_START_XIAOHONGSHU
+                "instagram" -> DouyinImageDownloadService.ACTION_START_INSTAGRAM
+                else -> DouyinImageDownloadService.ACTION_START
             }
             putExtra(DouyinImageDownloadService.EXTRA_METADATA, gallery.metadataJson)
             putExtra(
@@ -511,7 +562,13 @@ private fun LocalVideoLabScreen(sharedText: String) {
             "bilibili" -> Intent(context, BilibiliDownloadService::class.java).apply {
                 action = BilibiliDownloadService.ACTION_CANCEL
             }
-            "social_images", "douyin_images", "xiaohongshu_images" ->
+            "youtube" -> Intent(context, YoutubeDownloadService::class.java).apply {
+                action = YoutubeDownloadService.ACTION_CANCEL
+            }
+            "instagram" -> Intent(context, InstagramDownloadService::class.java).apply {
+                action = InstagramDownloadService.ACTION_CANCEL
+            }
+            "social_images", "douyin_images", "xiaohongshu_images", "instagram_images" ->
                 Intent(context, DouyinImageDownloadService::class.java).apply {
                 action = DouyinImageDownloadService.ACTION_CANCEL
             }
@@ -552,6 +609,19 @@ private fun LocalVideoLabScreen(sharedText: String) {
                 label = { Text("粘贴视频、图文链接或分享文案") },
                 minLines = 3,
                 maxLines = 6,
+                trailingIcon = {
+                    if (input.isNotBlank()) {
+                        TextButton(
+                            onClick = {
+                                input = ""
+                                clearSocialResult()
+                            },
+                            enabled = !download.active,
+                        ) {
+                            Text("清空")
+                        }
+                    }
+                },
             )
 
             Card(
@@ -575,8 +645,12 @@ private fun LocalVideoLabScreen(sharedText: String) {
                                 "video" -> "已识别视频作品，优先保存原始视频源。"
                                 else -> "支持分享文案、短链和带分享令牌的网址；可识别视频或图文。"
                             }
-                            PlatformKind.YOUTUBE -> "下一阶段需要本地登录态与 JS 校验。"
-                            PlatformKind.INSTAGRAM -> "下一阶段需要本地登录态与代理配置。"
+                            PlatformKind.YOUTUBE -> "免登录下载公开视频；可选中画质与编码。"
+                            PlatformKind.INSTAGRAM -> when (socialKind) {
+                                "image" -> "已识别 Instagram 图集，可挑选并保存原图。"
+                                "video" -> "已识别 Instagram 视频，可保存到相册。"
+                                else -> "粘贴 sessionid 登录态后即可解析 Instagram 图集与视频。"
+                            }
                             PlatformKind.BILIBILI -> "可选择画质与视频编码；音频使用 AAC 并在手机本地无损合并。"
                             PlatformKind.UNKNOWN -> "请输入支持平台中的单条链接或分享文案。"
                         },
@@ -585,7 +659,94 @@ private fun LocalVideoLabScreen(sharedText: String) {
                 }
             }
 
-            if (detected == PlatformKind.BILIBILI) {
+            if (detected == PlatformKind.INSTAGRAM) {
+                if (sessionid.isBlank() || showInstagramLoginEditor) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7ED)),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text("Instagram 登录态", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Instagram 必须登录才能下载。请在浏览器登录 instagram.com 后，把 cookie 里的 sessionid 值粘到下面；App 只存本机，长期有效。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            OutlinedTextField(
+                                value = sessionidDraft,
+                                onValueChange = { sessionidDraft = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = !download.active,
+                                label = { Text("sessionid") },
+                                singleLine = true,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = {
+                                        saveSessionid(sessionidDraft)
+                                        showInstagramLoginEditor = false
+                                    },
+                                    enabled = sessionidDraft.isNotBlank() && !download.active,
+                                ) {
+                                    Text("保存登录态")
+                                }
+                                if (sessionid.isNotBlank()) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            sessionidDraft = sessionid
+                                            showInstagramLoginEditor = false
+                                        },
+                                        enabled = !download.active,
+                                    ) {
+                                        Text("取消")
+                                    }
+                                }
+                            }
+                            if (sessionid.isNotBlank()) {
+                                TextButton(
+                                    onClick = {
+                                        saveSessionid("")
+                                        sessionidDraft = ""
+                                        showInstagramLoginEditor = true
+                                    },
+                                    enabled = !download.active,
+                                ) {
+                                    Text("清除已保存的登录态")
+                                }
+                            }
+                            Text(
+                                "还需手机开启能访问 Instagram 的 VPN/代理（你已在用）。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Instagram 登录态已保存 ✓",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        TextButton(
+                            onClick = {
+                                sessionidDraft = sessionid
+                                showInstagramLoginEditor = true
+                            },
+                            enabled = !download.active,
+                        ) {
+                            Text("管理")
+                        }
+                    }
+                }
+            }
+
+            if (detected == PlatformKind.BILIBILI || detected == PlatformKind.YOUTUBE) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F5FF)),
@@ -638,7 +799,10 @@ private fun LocalVideoLabScreen(sharedText: String) {
                 }
                 Button(
                     onClick = {
-                        if (detected == PlatformKind.DOUYIN || detected == PlatformKind.XIAOHONGSHU) {
+                        if (detected == PlatformKind.DOUYIN ||
+                            detected == PlatformKind.XIAOHONGSHU ||
+                            detected == PlatformKind.INSTAGRAM
+                        ) {
                             resolveSocial(detected)
                         } else {
                             callPython("probe_url", input)
@@ -652,6 +816,7 @@ private fun LocalVideoLabScreen(sharedText: String) {
                             probeBusy -> "解析中…"
                             detected == PlatformKind.DOUYIN -> "解析抖音内容"
                             detected == PlatformKind.XIAOHONGSHU -> "解析小红书内容"
+                            detected == PlatformKind.INSTAGRAM -> "解析 Instagram 内容"
                             else -> "只解析"
                         },
                     )
@@ -676,7 +841,17 @@ private fun LocalVideoLabScreen(sharedText: String) {
                             Text(gallery.description, maxLines = 3)
                         }
                         Text(
-                            "共 ${gallery.images.size} 张 · 已选 ${selectedImages.size} 张 · 无水印原图源",
+                            buildString {
+                                append("共 ${gallery.images.size} 张 · 已选 ${selectedImages.size} 张")
+                                val liveCount = gallery.images.count { it.livePhoto }
+                                if (liveCount > 0) {
+                                    append(" · 含 $liveCount 张实况（封面原图）")
+                                } else if (gallery.platform == "instagram") {
+                                    append(" · 最高分辨率图片源")
+                                } else {
+                                    append(" · 无水印原图源")
+                                }
+                            },
                             color = MaterialTheme.colorScheme.primary,
                             style = MaterialTheme.typography.labelLarge,
                         )
@@ -741,16 +916,21 @@ private fun LocalVideoLabScreen(sharedText: String) {
             }
 
             if (
-                ((detected == PlatformKind.DOUYIN || detected == PlatformKind.XIAOHONGSHU) &&
+                ((detected == PlatformKind.DOUYIN ||
+                    detected == PlatformKind.XIAOHONGSHU ||
+                    detected == PlatformKind.INSTAGRAM) &&
                     socialKind == "video") ||
-                detected == PlatformKind.BILIBILI
+                detected == PlatformKind.BILIBILI ||
+                detected == PlatformKind.YOUTUBE
             ) {
                 Button(
                     onClick = { startSupportedDownload() },
                     enabled = (
                         detected == PlatformKind.BILIBILI ||
+                            detected == PlatformKind.YOUTUBE ||
                             ((detected == PlatformKind.DOUYIN ||
-                                detected == PlatformKind.XIAOHONGSHU) && socialKind == "video")
+                                detected == PlatformKind.XIAOHONGSHU ||
+                                detected == PlatformKind.INSTAGRAM) && socialKind == "video")
                         ) &&
                         !probeBusy && !download.active,
                     modifier = Modifier.fillMaxWidth(),
@@ -760,6 +940,7 @@ private fun LocalVideoLabScreen(sharedText: String) {
                             download.active -> "下载任务进行中…"
                             detected == PlatformKind.DOUYIN -> "下载视频到相册"
                             detected == PlatformKind.XIAOHONGSHU -> "下载视频到相册"
+                            detected == PlatformKind.INSTAGRAM -> "下载视频到相册"
                             else -> "下载到相册"
                         },
                     )

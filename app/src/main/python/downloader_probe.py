@@ -70,6 +70,10 @@ def probe_url(text: str) -> str:
         from bilibili_resolver import resolve
 
         return resolve(text)
+    if site == "youtube":
+        from youtube_resolver import resolve
+
+        return resolve(text)
 
     try:
         import yt_dlp

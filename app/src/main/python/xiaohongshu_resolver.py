@@ -147,6 +147,8 @@ def _valid_cdn_url(value: Any) -> str | None:
         return None
     if not any(host.endswith(suffix) for suffix in ALLOWED_CDN_SUFFIXES):
         return None
+    if parsed.scheme == "http":
+        value = urllib.parse.urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
     return value
 
 
@@ -181,14 +183,67 @@ def _images(note: dict[str, Any]) -> list[dict[str, Any]]:
                 urls.append(value)
         urls = list(dict.fromkeys(urls))
         if urls:
-            result.append(
-                {
-                    "index": index,
-                    "urls": urls,
-                    "width": int(item.get("width") or 0),
-                    "height": int(item.get("height") or 0),
-                }
+            image = {
+                "index": index,
+                "urls": urls,
+                "width": int(item.get("width") or 0),
+                "height": int(item.get("height") or 0),
+            }
+            live_candidates: list[dict[str, Any]] = []
+            streams = item.get("stream") or {}
+            nested_live = item.get("livePhoto")
+            if (not isinstance(streams, dict) or not streams) and isinstance(nested_live, dict):
+                streams = ((nested_live.get("media") or {}).get("stream") or {})
+            if isinstance(streams, dict):
+                for codec, codec_items in streams.items():
+                    if not isinstance(codec_items, list):
+                        continue
+                    for stream in codec_items:
+                        if not isinstance(stream, dict):
+                            continue
+                        stream_urls: list[str] = []
+                        if value := _valid_cdn_url(stream.get("masterUrl")):
+                            stream_urls.append(value)
+                        for value in stream.get("backupUrls") or []:
+                            if valid := _valid_cdn_url(value):
+                                stream_urls.append(valid)
+                        if stream_urls:
+                            live_candidates.append(
+                                {
+                                    "urls": list(dict.fromkeys(stream_urls)),
+                                    "width": int(stream.get("width") or 0),
+                                    "height": int(stream.get("height") or 0),
+                                    "duration": int(stream.get("duration") or 0),
+                                    "size": int(stream.get("size") or 0),
+                                    "codec": str(stream.get("videoCodec") or codec or ""),
+                                    "stream_type": int(stream.get("streamType") or 0),
+                                    "stream_desc": str(stream.get("streamDesc") or ""),
+                                }
+                            )
+            live_candidates.sort(
+                key=lambda value: (
+                    str(value["codec"]).lower() in {"h264", "avc"},
+                    value["height"] * value["width"],
+                    value["size"],
+                ),
+                reverse=True,
             )
+            if live_candidates and bool(item.get("livePhoto")):
+                live = live_candidates[0]
+                image.update(
+                    {
+                        "live_photo": True,
+                        "live_urls": live["urls"],
+                        "live_width": live["width"],
+                        "live_height": live["height"],
+                        "live_duration": live["duration"],
+                        "live_size": live["size"],
+                        "live_codec": live["codec"],
+                        "live_stream_type": live["stream_type"],
+                        "live_stream_desc": live["stream_desc"],
+                    }
+                )
+            result.append(image)
     return result
 
 
